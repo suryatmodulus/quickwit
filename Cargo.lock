@@ -2842,6 +2842,7 @@ dependencies = [
  "crossbeam",
  "futures",
  "once_cell",
+ "quickwit-common",
  "quickwit-storage",
  "serde",
  "serde_cbor",
