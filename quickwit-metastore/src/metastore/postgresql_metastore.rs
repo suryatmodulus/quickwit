@@ -138,8 +138,8 @@ async fn index_metadata(
         .index_metadata()
 }
 
-/// Publish splits.
-/// Returns the successful split IDs.
+/// Publishes splits.
+/// Returns the IDs of the splits successfully published.
 #[instrument(skip(tx))]
 async fn mark_splits_as_published_helper(
     tx: &mut Transaction<'_, Postgres>,
@@ -168,13 +168,14 @@ async fn mark_splits_as_published_helper(
     Ok(published_split_ids)
 }
 
-/// Mark splits for deletion.
-/// Returns the IDs of the splits that were successfully marked for deletion.
+/// Marks splits for deletion.
+/// Returns the IDs of the splits successfully marked for deletion.
 #[instrument(skip(tx))]
 async fn mark_splits_for_deletion(
     tx: &mut Transaction<'_, Postgres>,
     index_id: &str,
     split_ids: &[&str],
+    deletable_states: &[&str],
 ) -> MetastoreResult<Vec<String>> {
     if split_ids.is_empty() {
         return Ok(Vec::new());
@@ -186,12 +187,14 @@ async fn mark_splits_for_deletion(
         WHERE
                 index_id = $2
             AND split_id = ANY($3)
+            AND split_state = ANY($4)
         RETURNING split_id
     "#,
     )
     .bind(SplitState::MarkedForDeletion.as_str())
     .bind(index_id)
     .bind(split_ids)
+    .bind(deletable_states)
     .map(|row| row.get(0))
     .fetch_all(tx)
     .await?;
@@ -572,8 +575,13 @@ impl Metastore for PostgresqlMetastore {
                 mark_splits_as_published_helper(tx, index_id, new_split_ids).await?;
 
             // Mark splits for deletion
-            let marked_split_ids =
-                mark_splits_for_deletion(tx, index_id, replaced_split_ids).await?;
+            let marked_split_ids = mark_splits_for_deletion(
+                tx,
+                index_id,
+                replaced_split_ids,
+                &[SplitState::Published.as_str()],
+            )
+            .await?;
 
             // returning `Ok` means `commit` the transaction.
             if published_split_ids.len() == new_split_ids.len()
@@ -629,8 +637,17 @@ impl Metastore for PostgresqlMetastore {
         split_ids: &[&'a str],
     ) -> MetastoreResult<()> {
         run_with_tx!(self.connection_pool, tx, {
-            let marked_split_ids: Vec<String> =
-                mark_splits_for_deletion(tx, index_id, split_ids).await?;
+            let marked_split_ids: Vec<String> = mark_splits_for_deletion(
+                tx,
+                index_id,
+                split_ids,
+                &[
+                    SplitState::Staged.as_str(),
+                    SplitState::Published.as_str(),
+                    SplitState::MarkedForDeletion.as_str(),
+                ],
+            )
+            .await?;
 
             if marked_split_ids.len() == split_ids.len() {
                 return Ok(());
